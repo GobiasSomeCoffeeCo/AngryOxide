@@ -15,6 +15,7 @@ use libwifi::{
 use nl80211_ng::channels::WiFiBand;
 
 use crate::{
+    oxideruntime::OxideRuntime,
     status::{MessageType, StatusMessage},
     tx::{
         build_association_request_rg, build_authentication_frame_noack, build_csa_beacon,
@@ -22,7 +23,7 @@ use crate::{
         build_disassocation_from_ap, build_disassocation_from_client, build_probe_response,
         build_reassociation_request,
     },
-    write_packet, OxideRuntime,
+    util::write_packet,
 };
 
 //////////////////////////////////////////////////////////////
