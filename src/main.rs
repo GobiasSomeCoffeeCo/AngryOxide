@@ -6,6 +6,7 @@ mod auth;
 mod database;
 mod devices;
 mod eventhandler;
+mod geofence;
 mod gps;
 mod matrix;
 mod oui;
@@ -38,6 +39,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use database::DatabaseWriter;
+use geofence::Geofence;
 use gps::GPSDSource;
 use libc::EXIT_FAILURE;
 use libwifi::frame::components::{MacAddress, RsnAkmSuite, RsnCipherSuite, WpaAkmSuite};
@@ -111,11 +113,11 @@ struct Arguments {
     /// Interface to use.
     #[arg(short, long)]
     interface: String,
-    
+
     /// Optional - Channel to scan. Will use "-c 1,6,11" if none specified.
     #[arg(short, long, use_value_delimiter = true, action = ArgAction::Append)]
     channel: Vec<String>,
-    
+
     /// Optional - Entire band to scan - will include all channels interface can support.
     #[arg(short, long, name = "2 | 5 | 6 | 60", use_value_delimiter = true, action = ArgAction::Append)]
     band: Vec<u8>,
@@ -157,7 +159,12 @@ struct Arguments {
     rogue: Option<String>,
 
     /// Optional - Alter default HOST:Port for GPSD connection.
-    #[arg(long, default_value = "127.0.0.1:2947", help_heading = "Advanced Options", name = "GPSD Host:Port")]
+    #[arg(
+        long,
+        default_value = "127.0.0.1:2947",
+        help_heading = "Advanced Options",
+        name = "GPSD Host:Port"
+    )]
     gpsd: String,
 
     /// Optional - AO will auto-hunt all channels then lock in on the ones targets are on.
@@ -189,8 +196,29 @@ struct Arguments {
     disablemouse: bool,
 
     /// Optional - Adjust channel hop dwell time.
-    #[arg(long, default_value_t = 2, help_heading = "Advanced Options", name = "Dwell Time (seconds)")]
+    #[arg(
+        long,
+        default_value_t = 2,
+        help_heading = "Advanced Options",
+        name = "Dwell Time (seconds)"
+    )]
     dwell: u64,
+
+    /// Turn debugging information on
+    #[arg(short, long, help_heading = "Advanced Options", default_value_t = 0, action = ArgAction::Count)]
+    pub verbosity: u8,
+
+    /// Optional - Enable geofencing using a specified grid and distance.
+    #[arg(long, help_heading = "Geofencing")]
+    geofence: bool,
+
+    /// MGRS grid for geofencing (required if geofence is enabled).
+    #[arg(long, help_heading = "Geofencing", requires = "geofence")]
+    grid: Option<String>,
+
+    /// Distance in meters from the grid centerpoint (required if geofence is enabled).
+    #[arg(long, help_heading = "Geofencing", requires = "geofence")]
+    distance: Option<f64>,
 }
 
 #[derive(Default)]
@@ -437,7 +465,7 @@ impl OxideRuntime {
                                     Ok(mac) => Target::MAC(TargetMAC::new(mac)),
                                     Err(_) => Target::SSID(TargetSSID::new(&line)),
                                 }
-                            },
+                            }
                             Err(_) => {
                                 continue;
                             }
@@ -1180,11 +1208,10 @@ fn process_frame(oxide: &mut OxideRuntime, packet: &[u8]) -> Result<(), String> 
                         .map(|nssid| nssid.replace('\0', ""));
 
                     if bssid.is_real_device() && bssid != oxide.target_data.rogue_client {
-                        let ap: &mut AccessPoint =
-                            oxide.access_points.add_or_update_device(
-                                bssid,
-                                &AccessPoint::from_beacon(&beacon_frame, &radiotap, &oxide)?,
-                            );
+                        let ap: &mut AccessPoint = oxide.access_points.add_or_update_device(
+                            bssid,
+                            &AccessPoint::from_beacon(&beacon_frame, &radiotap, &oxide)?,
+                        );
 
                         // Proliferate whitelist
                         let _ = oxide.target_data.whitelist.get_whitelisted(ap);
@@ -1345,11 +1372,14 @@ fn process_frame(oxide: &mut OxideRuntime, packet: &[u8]) -> Result<(), String> 
                             .ssid
                             .as_ref()
                             .map(|nssid| nssid.replace('\0', ""));
-                        let ap =
-                            oxide.access_points.add_or_update_device(
-                                *bssid,
-                                &AccessPoint::from_probe_response(&probe_response_frame, &radiotap, &oxide)?,
-                            );
+                        let ap = oxide.access_points.add_or_update_device(
+                            *bssid,
+                            &AccessPoint::from_probe_response(
+                                &probe_response_frame,
+                                &radiotap,
+                                &oxide,
+                            )?,
+                        );
 
                         ap.pr_station = Some(probe_response_frame.station_info.clone());
 
@@ -2463,6 +2493,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         MessageType::Info,
         "Starting...".to_string(),
     ));
+
+    if cli.geofence {
+        if let (Some(grid), Some(distance)) = (&cli.grid, cli.distance) {
+            let geofence = Geofence::new(grid.clone(), distance);
+
+            println!("💲 Geofence enabled.");
+
+            geofence.monitor_location(&cli);
+        } else {
+            eprintln!("Geofence enabled but grid or distance not provided.");
+            exit(EXIT_FAILURE);
+        }
+    }
 
     let iface = oxide.if_hardware.interface.clone();
     let idx = iface.index.unwrap();
