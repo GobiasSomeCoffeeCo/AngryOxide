@@ -864,6 +864,10 @@ impl OxideRuntime {
             eprintln!("{}", e);
         }
 
+        if cli_args.geofence {
+            println!("💲 Geofence enabled.");
+        }
+
         // Setup OUI Database
         let oui_db = OuiDatabase::new();
         println!("💲 OUI Records Imported: {}", oui_db.record_count());
@@ -2932,8 +2936,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let (Some(grid), Some(distance)) = (&cli.grid, cli.distance) {
                 let geofence = Geofence::new(grid.clone(), distance);
 
-                println!("💲 Geofence enabled.");
-
                 let gpsd_parts: Vec<&str> = cli.gpsd.split(':').collect();
                 if gpsd_parts.len() != 2 {
                     oxide.status_log.add_message(StatusMessage::new(
@@ -2942,15 +2944,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ));
                     std::process::exit(1);
                 }
-                let gpsd_host = gpsd_parts[0].to_string();
-                let gpsd_port: u16 = gpsd_parts[1].parse().expect("Error: Invalid port number.");
-                let mut gpsd = geofence::GPSDSource::new(gpsd_host, gpsd_port);
-                gpsd.start();
+                oxide.file_data.gps_source.start();
 
                 let mut last_log_time = Instant::now();
 
                 loop {
-                    let gps_data = gpsd.get_gps();
+                    let gps_data = oxide.file_data.gps_source.get_gps();
                     if let (Some(lat), Some(lon)) = (gps_data.lat, gps_data.lon) {
                         let current_point = (lat, lon);
                         let distance = geofence.distance_to_target(current_point);
@@ -2965,7 +2964,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 oxide.status_log.add_message(StatusMessage::new(
                                     MessageType::Info,
                                     format!(
-                                        "🚨 Our location ({}) is within the target area! Getting Angry... 😠",
+                                        "Our location ({}) is within the target area! Getting Angry... 😠",
                                         coord_mgrs
                                     ),
                                 ));
@@ -3019,7 +3018,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                gpsd.stop();
+                oxide.file_data.gps_source.stop();
             } else {
                 oxide.status_log.add_message(StatusMessage::new(
                     MessageType::Error,
