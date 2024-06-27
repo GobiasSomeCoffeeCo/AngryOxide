@@ -2944,71 +2944,92 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ));
                     std::process::exit(1);
                 }
+
+                // Start the GPS source
                 oxide.file_data.gps_source.start();
 
                 let mut last_log_time = Instant::now();
 
                 loop {
                     let gps_data = oxide.file_data.gps_source.get_gps();
-                    if let (Some(lat), Some(lon)) = (gps_data.lat, gps_data.lon) {
-                        let current_point = (lat, lon);
-                        let distance = geofence.distance_to_target(current_point);
-                        let rounded_distance = distance.round();
-                        let coord = LatLon::create(current_point.0, current_point.1)
-                            .expect("Unable to read Lat/Lon");
-                        let coord_mgrs = coord.to_mgrs(5);
 
-                        // Log the current location and distance every 2 seconds
+                    if let (Some(lat), Some(lon)) = (gps_data.lat, gps_data.lon) {
+                        // Log every 2 seconds
                         if last_log_time.elapsed() >= Duration::from_secs(2) {
-                            if geofence.is_within_area(current_point) {
+                            // Check for invalid (0.0, 0.0) coordinates
+                            if lat == 0.0 && lon == 0.0 {
                                 oxide.status_log.add_message(StatusMessage::new(
                                     MessageType::Info,
-                                    format!(
-                                        "Our location ({}) is within the target area! Getting Angry... 😠",
-                                        coord_mgrs
-                                    ),
+                                    format!("No GPS coordinates received: (0.0, 0.0)."),
                                 ));
                             } else {
-                                oxide.status_log.add_message(StatusMessage::new(
-                                    MessageType::Info,
-                                    format!(
-                                        "Current location ({}) is {} meters from the target grid.",
-                                        coord_mgrs, rounded_distance
-                                    ),
-                                ));
+                                let current_point = (lat, lon);
+                                let distance = geofence.distance_to_target(current_point);
+                                let rounded_distance = distance.round();
+
+                                // Ensure valid coordinates before attempting conversion
+                                if let Ok(coord) = LatLon::create(current_point.0, current_point.1)
+                                {
+                                    let coord_mgrs = coord.to_mgrs(5);
+
+                                    if geofence.is_within_area(current_point) {
+                                        oxide.status_log.add_message(StatusMessage::new(
+                                            MessageType::Info,
+                                            format!(
+                                                "Our location ({}) is within the target area! Getting Angry... 😠",
+                                                coord_mgrs
+                                            ),
+                                        ));
+                                    } else {
+                                        oxide.status_log.add_message(StatusMessage::new(
+                                            MessageType::Info,
+                                            format!(
+                                                "Current location ({}) is {} meters from the target grid.",
+                                                coord_mgrs, rounded_distance
+                                            ),
+                                        ));
+                                    }
+                                } else {
+                                    oxide.status_log.add_message(StatusMessage::new(
+                                        MessageType::Error,
+                                        format!("Invalid coordinates for MGRS conversion."),
+                                    ));
+                                }
                             }
                             last_log_time = Instant::now();
                         }
 
-                        if geofence.is_within_area(current_point) {
-                            match read_frame(&mut oxide) {
-                                Ok(packet) => {
-                                    if !packet.is_empty() {
-                                        let _ = process_frame(&mut oxide, &packet);
+                        if lat != 0.0 || lon != 0.0 {
+                            if geofence.is_within_area((lat, lon)) {
+                                match read_frame(&mut oxide) {
+                                    Ok(packet) => {
+                                        if !packet.is_empty() {
+                                            let _ = process_frame(&mut oxide, &packet);
+                                        }
                                     }
-                                }
-                                Err(code) => {
-                                    if code.kind().to_string() == "network down" {
-                                        oxide
-                                            .if_hardware
-                                            .netlink
-                                            .set_interface_up(
-                                                oxide.if_hardware.interface.index.unwrap(),
-                                            )
-                                            .ok();
-                                    } else {
-                                        // This will result in error message.
-                                        err = Some(code.kind().to_string());
-                                        running.store(false, Ordering::SeqCst);
+                                    Err(code) => {
+                                        if code.kind().to_string() == "network down" {
+                                            oxide
+                                                .if_hardware
+                                                .netlink
+                                                .set_interface_up(
+                                                    oxide.if_hardware.interface.index.unwrap(),
+                                                )
+                                                .ok();
+                                        } else {
+                                            // This will result in error message.
+                                            err = Some(code.kind().to_string());
+                                            running.store(false, Ordering::SeqCst);
+                                        }
                                     }
-                                }
-                            };
+                                };
 
-                            // Exit on target's success
-                            if oxide.config.autoexit && oxide.get_target_success() {
-                                running.store(false, Ordering::SeqCst);
-                                exit_on_succ = true;
-                                break;
+                                // Exit on target's success
+                                if oxide.config.autoexit && oxide.get_target_success() {
+                                    running.store(false, Ordering::SeqCst);
+                                    exit_on_succ = true;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -3018,13 +3039,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
+                // Stop the GPS source
                 oxide.file_data.gps_source.stop();
             } else {
                 oxide.status_log.add_message(StatusMessage::new(
                     MessageType::Error,
                     format!("Geofence enabled but grid or distance not provided."),
                 ));
-                exit(EXIT_FAILURE);
+                std::process::exit(1);
             }
         } else {
             // Original loop without geofencing
