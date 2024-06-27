@@ -181,7 +181,6 @@ impl Geofence {
                     );
                 }
             }
-            thread::sleep(Duration::from_secs(1));
         }
     }
 }
